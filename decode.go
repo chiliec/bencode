@@ -32,6 +32,8 @@ type Decoder struct {
 	buf           []byte
 	n             int
 	failUnordered bool
+	depth         int
+	maxDepth      int
 }
 
 // SetFailOnUnorderedKeys will cause the decoder to fail when encountering
@@ -96,7 +98,30 @@ func (d *Decoder) peekByte() (b byte, err error) {
 
 // NewDecoder returns a new decoder that reads from r
 func NewDecoder(r io.Reader) *Decoder {
-	return &Decoder{r: bufio.NewReader(r)}
+	return &Decoder{r: bufio.NewReader(r), maxDepth: DefaultMaxDepth}
+}
+
+// DefaultMaxDepth is the default maximum nesting depth of lists and
+// dictionaries accepted by a Decoder.
+const DefaultMaxDepth = 100
+
+// SetMaxDepth sets the maximum nesting depth of lists and dictionaries.
+// Decoding deeper input returns an error instead of overflowing the stack.
+// A value of 0 or less disables the limit.
+func (d *Decoder) SetMaxDepth(n int) {
+	d.maxDepth = n
+}
+
+func (d *Decoder) enterNesting() error {
+	d.depth++
+	if d.maxDepth > 0 && d.depth > d.maxDepth {
+		return fmt.Errorf("bencode: exceeded max nesting depth of %d", d.maxDepth)
+	}
+	return nil
+}
+
+func (d *Decoder) leaveNesting() {
+	d.depth--
 }
 
 // Decode reads the bencoded value from its input and stores it in the value pointed to by val.
@@ -225,9 +250,15 @@ func (d *Decoder) decodeInto(val reflect.Value) (err error) {
 	case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		err = d.decodeString(v)
 	case 'l':
-		err = d.decodeList(v)
+		if err = d.enterNesting(); err == nil {
+			err = d.decodeList(v)
+		}
+		d.leaveNesting()
 	case 'd':
-		err = d.decodeDict(v)
+		if err = d.enterNesting(); err == nil {
+			err = d.decodeDict(v)
+		}
+		d.leaveNesting()
 	default:
 		err = errors.New("Invalid input")
 	}
